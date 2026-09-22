@@ -6,7 +6,7 @@ import numpy as np
 # ============================================================
 
 df = pd.read_csv("data/sensor.csv")
-
+#
 print("원본 데이터 크기:", df.shape)
 
 
