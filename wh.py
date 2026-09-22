@@ -50,17 +50,16 @@ print("=====================")
 #### 시계열 분석용도
 # timestamp index로 정렬
 df["timestamp"] = pd.to_datetime(df["timestamp"])
-df = df.set_index(df["timestamp"]).sort_index()
+df = df.set_index("timestamp").sort_index()
 
 ## 규모(3~4달)에 비해 측정단위(1분)이 너무 작기 때문에 다운샘플링으로 추세를 파악해보려함
-
-resam_h_m = df["timestamp"].resample("h").mean()  # 시간 단위로 리샘플링 후 평균
+df = df[:-1]  # machine_status 열을 제외함
+df_h_m = df.resample("h").mean(numeric_only=True)  # 시간 단위로 리샘플링 후 평균
 # 시간대 구분 — 24시간 안의 운영 패턴
-resam_D_m = df["timestamp"].resample("D").mean()  # 일 단위
+df_D_m = df.resample("D").mean(numeric_only=True)  # 일 단위
 # 흐름 부각 — 일별 평균이 추세를 또렷하게
-resam_W_m = df["timestamp"].resample("W").mean()  # 주 단위
+df_W_m = df.resample("W").mean(numeric_only=True)  # 주 단위
 # 큰 그림 — 주 단위 평균으로 장기 변화 관찰
 
-df
 ## 이동평균 · 이동표준편차 · 변화율 · 시차 변수 중 3종 이상 생성  (시계열 담당 과제 의무)
-print(resam_W_m)
+print(df_W_m)
