@@ -18,6 +18,8 @@ print(df.head())
 print(df.shape)
 # 10000 , 14의 크기를 갖고있는 데이터 셋이다.
 
+print("나는 머지~~~")
+
 df.info()
 # 결측치가 존재하지 않음, 제품 iD와 타입(나중에 인코딩 해줘도 좋다~) 뺴고 모두 숫자형으로 잘 들어가 있다!
 print(df.describe().T)
