@@ -6,7 +6,7 @@ import numpy as np
 # ============================================================
 
 df = pd.read_csv("data/sensor.csv")
-#
+
 print("원본 데이터 크기:", df.shape)
 
 
@@ -263,3 +263,66 @@ print(model_df.info())
 
 print("\n최종 사용 변수")
 print(feature_cols)
+
+
+print(df[feature_cols].isna().sum())
+
+
+# 여기서부터 아이솔레이트트리!
+from sklearn.ensemble import IsolationForest
+from sklearn.preprocessing import StandardScaler
+
+# ============================================================
+# 19. 스케일링
+# ============================================================
+
+scaler = StandardScaler()
+
+X_scaled = scaler.fit_transform(X)
+
+
+# ============================================================
+# 20. Isolation Forest 모델 생성
+# ============================================================
+
+iso_model = IsolationForest(
+    n_estimators=100, contamination=0.01, random_state=42, n_jobs=-1
+)
+
+
+# ============================================================
+# 21. 모델 학습 + 이상치 예측
+# ============================================================
+
+model_df["anomaly"] = iso_model.fit_predict(X_scaled)
+
+
+# ============================================================
+# 22. 이상치 점수 저장
+# ============================================================
+
+model_df["anomaly_score"] = iso_model.decision_function(X_scaled)
+
+
+# ============================================================
+# 23. 결과 확인
+# ============================================================
+
+print("\nIsolation Forest 결과")
+print(model_df["anomaly"].value_counts())
+
+print("\n이상 비율")
+print(model_df["anomaly"].value_counts(normalize=True) * 100)
+
+
+# ============================================================
+# 24. 탐지된 이상 데이터 확인
+# ============================================================
+
+anomaly_df = model_df[model_df["anomaly"] == -1]
+
+print("\n탐지된 이상 데이터 개수")
+print(len(anomaly_df))
+
+print("\n이상 데이터 예시")
+print(anomaly_df[["timestamp", "anomaly", "anomaly_score"]].head(20))
