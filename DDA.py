@@ -1,19 +1,9 @@
 import pandas as pd
 
-df = pd.read_csv("data/sensor.csv")
+df = pd.read_csv("sensor.csv")
 
 print(df.head())
-# Air temperature → 공기 온도
-# Process temperature → 공정 온도
-# Rotational speed → 회전속도
-# Torque → 토크
-# Tool wear → 공구 마모
-# Machine failure → 기계 고장 여부  **이 친구가 종속변수!**
-# TWF	Tool Wear Failure	🔧 공구 마모로 인한 고장
-# HDF	Heat Dissipation Failure	 열 방출/냉각 문제로 인한 고장
-# PWF	Power Failure	동력 조건 문제로 인한 고장
-# OSF	Overstrain Failure	 과도한 부하·변형으로 인한 고장
-# RNF	Random Failure	 랜덤하게 발생한 고장
+
 
 print(df.shape)
 # 10000 , 14의 크기를 갖고있는 데이터 셋이다.
