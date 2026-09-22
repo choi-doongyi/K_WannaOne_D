@@ -27,6 +27,8 @@ print(df.isnull().sum())
 print(df.duplicated().sum())
 # 중복되는 행 없다
 
+# 테스트 주석
+
 
 # print(df["Machine failure"].value_counts())
 # # Machine failure 분포는 0 : 9661 , 1(고장) 339
