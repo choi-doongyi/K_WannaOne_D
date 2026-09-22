@@ -34,5 +34,35 @@ selected_font = set_korean_font()
 print("사용 폰트:", selected_font)
 
 df = pd.read_csv('data/sensor.csv')
-print(df.shape)
-print(df.isna().sum().value_counts())
+# 불필요한 인덱스 컬럼 제거
+df = df.drop(columns=["Unnamed: 0"], errors="ignore")
+
+# 시간 컬럼 변환 및 정렬
+df["timestamp"] = pd.to_datetime(df["timestamp"])
+df = df.sort_values("timestamp").reset_index(drop=True)
+
+# 결측률 확인
+missing_rate = df.isna().mean().sort_values(ascending=False)
+print(missing_rate)
+
+# 전체가 결측인 센서 제거
+all_missing = [
+    col for col in df.columns
+    if col.startswith("sensor_") and df[col].isna().all()
+]
+
+df = df.drop(columns=all_missing)
+
+# 센서 컬럼 목록
+sensor_columns = [
+    col for col in df.columns
+    if col.startswith("sensor_")
+]
+
+# 시간 순서 기반 결측 보간
+df[sensor_columns] = (
+    df[sensor_columns]
+    .interpolate(method="linear", limit_direction="both")
+)
+
+print(df.info())
