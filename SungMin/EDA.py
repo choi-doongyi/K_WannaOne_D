@@ -138,7 +138,7 @@ df = df.set_index("timestamp")
 # ============================================================
 # 10. 연속형 센서 결측 처리
 #
-# 5분 이하의 짧은 결측구간만 시간 기반 보간
+# 연속된 결측치 5개 이하의 짧은 결측구간만 시간 기반 보간
 #
 # 긴 결측구간은 억지로 채우지 않음
 # ============================================================
@@ -267,62 +267,10 @@ print(feature_cols)
 
 print(df[feature_cols].isna().sum())
 
-
-# 여기서부터 아이솔레이트트리!
-from sklearn.ensemble import IsolationForest
-from sklearn.preprocessing import StandardScaler
-
 # ============================================================
-# 19. 스케일링
+# 19. 전처리 완료 데이터 저장
 # ============================================================
 
-scaler = StandardScaler()
+model_df.to_csv("data/processed_sensor.csv", index=False)
 
-X_scaled = scaler.fit_transform(X)
-
-
-# ============================================================
-# 20. Isolation Forest 모델 생성
-# ============================================================
-
-iso_model = IsolationForest(
-    n_estimators=100, contamination=0.01, random_state=42, n_jobs=-1
-)
-
-
-# ============================================================
-# 21. 모델 학습 + 이상치 예측
-# ============================================================
-
-model_df["anomaly"] = iso_model.fit_predict(X_scaled)
-
-
-# ============================================================
-# 22. 이상치 점수 저장
-# ============================================================
-
-model_df["anomaly_score"] = iso_model.decision_function(X_scaled)
-
-
-# ============================================================
-# 23. 결과 확인
-# ============================================================
-
-print("\nIsolation Forest 결과")
-print(model_df["anomaly"].value_counts())
-
-print("\n이상 비율")
-print(model_df["anomaly"].value_counts(normalize=True) * 100)
-
-
-# ============================================================
-# 24. 탐지된 이상 데이터 확인
-# ============================================================
-
-anomaly_df = model_df[model_df["anomaly"] == -1]
-
-print("\n탐지된 이상 데이터 개수")
-print(len(anomaly_df))
-
-print("\n이상 데이터 예시")
-print(anomaly_df[["timestamp", "anomaly", "anomaly_score"]].head(20))
+print("전처리 데이터 저장 완료")
