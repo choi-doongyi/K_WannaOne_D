@@ -1,243 +1,443 @@
 # ============================================================
+# PDA.py
+#
+# 비지도 시계열 이상탐지 프로젝트 통합본
+#
+# 흐름
+# 1. 데이터 불러오기
+# 2. 시간순 Train / Test 분리
+# 3. Train 기준 Scaling
+# 4. Z-score Baseline
+# 5. Isolation Forest
+# 6. LSTM Autoencoder
+# 7. 모델 / Reconstruction Error 저장
+# 8. LSTM 95 / 97 / 99 Threshold 비교
+# 9. 30분 기준 Event 생성
+# 10. 하루 평균 알람 수 계산
+#
+# ★ Equipment_state는 전 과정에서 사용하지 않음
+# ============================================================
+
+
+# ============================================================
 # 라이브러리
 # ============================================================
+
+import os
+import json
+import joblib
 
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
-from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import IsolationForest
 
 import tensorflow as tf
+
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, RepeatVector, TimeDistributed, Dense
+from tensorflow.keras.layers import Input, LSTM, RepeatVector, TimeDistributed, Dense
+
 from tensorflow.keras.callbacks import EarlyStopping
+
+# ============================================================
+# 0. 설정
+# ============================================================
 
 np.random.seed(42)
 tf.random.set_seed(42)
 
 
-# ============================================================
-# 1. 전처리 완료 데이터 불러오기
-# ============================================================
-
-df = pd.read_csv("data/processed_sensor.csv", parse_dates=["timestamp"])
-
-print("데이터 크기:", df.shape)
-
-
-# ============================================================
-# 2. Feature 생성
+# ------------------------------------------------------------
+# True :
+# 저장된 모델이 있어도 처음부터 다시 학습
 #
-# timestamp는 모델 입력에서 제외
+# False :
+# 저장된 결과가 있으면 재사용
+# ------------------------------------------------------------
+
+FORCE_RETRAIN = False
+
+
+# ------------------------------------------------------------
+# 데이터 설정
+# ------------------------------------------------------------
+
+DATA_PATH = "data/processed_sensor.csv"
+
+TRAIN_RATIO = 0.7
+
+TIME_STEPS = 30
+
+
+# ------------------------------------------------------------
+# Isolation Forest 설정
+# ------------------------------------------------------------
+
+ISO_CONTAMINATION = 0.01
+
+
+# ------------------------------------------------------------
+# LSTM Threshold
+# ------------------------------------------------------------
+
+LSTM_PERCENTILES = [95, 97, 99]
+
+
+# ------------------------------------------------------------
+# Event 기준
+#
+# 이상 시점 간격이 30분 이내면
+# 하나의 사건으로 묶음
+# ------------------------------------------------------------
+
+EVENT_GAP_MINUTES = 30
+
+
+# ------------------------------------------------------------
+# 폴더
+# ------------------------------------------------------------
+
+os.makedirs("models", exist_ok=True)
+
+os.makedirs("results", exist_ok=True)
+
+
+# ============================================================
+# 1. 데이터 불러오기
 # ============================================================
 
-feature_cols = [col for col in df.columns if col != "timestamp"]
+df = pd.read_csv(DATA_PATH, parse_dates=["timestamp"])
 
-X = df[feature_cols].copy()
+
+df = df.sort_values("timestamp").reset_index(drop=True)
+
+
+print("\n==============================")
+print("데이터 확인")
+print("==============================")
+
+
+print("데이터 크기 :", df.shape)
+
+
+print("시간 범위 :", df["timestamp"].min(), "~", df["timestamp"].max())
+
+
+# ============================================================
+# 2. 실제 Label 완전 제외
+#
+# Equipment_state가 존재하더라도
+# 현재 분석에서는 없는 변수처럼 처리
+#
+# 원본 df에는 그대로 남지만
+# 모델 / 결과 CSV에는 사용하지 않음
+# ============================================================
+
+GROUND_TRUTH_COLS = [col for col in ["Equipment_state"] if col in df.columns]
+
+
+analysis_df = df.drop(columns=GROUND_TRUTH_COLS, errors="ignore").copy()
+
+
+if GROUND_TRUTH_COLS:
+
+    print("\n실제 Label 발견 → 분석에서 제외:", GROUND_TRUTH_COLS)
+
+
+# ============================================================
+# 3. Feature 생성
+# ============================================================
+
+feature_cols = [col for col in analysis_df.columns if col != "timestamp"]
+
+
+X = analysis_df[feature_cols].copy()
+
+
+print("\nFeature 개수")
+print(len(feature_cols))
+
 
 print("\nX Shape")
 print(X.shape)
+
 
 print("\nNaN 개수")
 print(X.isna().sum().sum())
 
 
 # ============================================================
-# 3. Isolation Forest / Z-score용 스케일링
+# 4. 시간순 Train / Test 분리
 #
-# ★ 현재는 기존 실험과 동일하게 전체 데이터를 Scaling
-# ★ LSTM은 아래에서 별도의 scaler를 사용
-# ============================================================
-
-scaler = StandardScaler()
-
-X_scaled = scaler.fit_transform(X)
-
-
-# ============================================================
-# 4. Isolation Forest 모델 생성
-# ============================================================
-
-iso_model = IsolationForest(
-    n_estimators=100, contamination=0.01, random_state=42, n_jobs=-1
-)
-
-
-# ============================================================
-# 5. Isolation Forest 학습 + 이상치 예측
+# 앞쪽 70%를 정상 패턴 학습구간으로 가정
 #
-# 1  = 정상
-# -1 = 이상
+# shuffle X
 # ============================================================
-
-df["anomaly"] = iso_model.fit_predict(X_scaled)
-
-
-# ============================================================
-# 6. Isolation Forest 이상 점수
-# ============================================================
-
-df["anomaly_score"] = iso_model.decision_function(X_scaled)
-
-
-# ============================================================
-# 7. Isolation Forest 결과 확인
-# ============================================================
-
-print("\n==============================")
-print("Isolation Forest 결과")
-print("==============================")
-
-print(df["anomaly"].value_counts())
-
-print("\n이상 비율")
-print(df["anomaly"].value_counts(normalize=True) * 100)
-
-
-# ============================================================
-# 8. Isolation Forest 이상 데이터 확인
-# ============================================================
-
-anomaly_df = df[df["anomaly"] == -1]
-
-print("\n탐지된 이상 데이터 개수")
-print(len(anomaly_df))
-
-print("\n이상 데이터 예시")
-
-print(anomaly_df[["timestamp", "anomaly", "anomaly_score"]].head(20))
-
-
-# ============================================================
-# 9. Z-score Baseline
-#
-# StandardScaler 결과는
-# 평균 0, 표준편차 1 형태
-#
-# 한 시점에서 여러 센서 중
-# 가장 큰 절대 Z-score를 이상점수로 사용
-# ============================================================
-
-z_scores = np.abs(X_scaled)
-
-df["zscore_anomaly_score"] = z_scores.max(axis=1)
-
-
-# ============================================================
-# 10. Z-score 이상 판정
-#
-# |Z| >= 3 → 이상
-#
-# 1  = 정상
-# -1 = 이상
-# ============================================================
-
-Z_THRESHOLD = 3.0
-
-df["zscore_anomaly"] = np.where(df["zscore_anomaly_score"] >= Z_THRESHOLD, -1, 1)
-
-
-print("\n==============================")
-print("Z-score Baseline 결과")
-print("==============================")
-
-print(df["zscore_anomaly"].value_counts())
-
-print("\nZ-score 이상 비율")
-
-print(df["zscore_anomaly"].value_counts(normalize=True) * 100)
-
-
-# ============================================================
-# 11. Z-score 이상 데이터 확인
-# ============================================================
-
-zscore_anomaly_df = df[df["zscore_anomaly"] == -1]
-
-print("\nZ-score 이상 데이터 개수")
-print(len(zscore_anomaly_df))
-
-print("\nZ-score 이상 데이터 예시")
-
-print(
-    zscore_anomaly_df[["timestamp", "zscore_anomaly", "zscore_anomaly_score"]].head(20)
-)
-
-
-# ============================================================
-# 여기서부터 LSTM Autoencoder
-# ============================================================
-
-
-# ============================================================
-# 12. LSTM Train / Test 시간순 분리
-#
-# ★ 중요
-# Scaling 전에 Train/Test를 먼저 나눈다.
-#
-# 시계열 데이터이므로 shuffle 하지 않음
-# ============================================================
-
-TRAIN_RATIO = 0.7
 
 train_size = int(len(X) * TRAIN_RATIO)
 
+
 X_train_raw = X.iloc[:train_size].copy()
+
+
 X_test_raw = X.iloc[train_size:].copy()
 
 
+train_timestamp = analysis_df["timestamp"].iloc[:train_size].reset_index(drop=True)
+
+
+test_timestamp = analysis_df["timestamp"].iloc[train_size:].reset_index(drop=True)
+
+
 print("\n==============================")
-print("LSTM 데이터 분리")
+print("Train / Test 분리")
 print("==============================")
 
-print("전체 데이터:", X.shape)
 
-print("Train:", X_train_raw.shape)
-
-print("Test:", X_test_raw.shape)
+print("Train :", X_train_raw.shape)
 
 
-# ============================================================
-# 13. LSTM용 Scaling
-#
-# ★ Train 데이터만 사용해서
-# 평균 / 표준편차를 계산
-#
-# 미래인 Test 데이터의 정보를
-# 미리 사용하지 않도록 함
-# ============================================================
-
-lstm_scaler = StandardScaler()
+print("Test :", X_test_raw.shape)
 
 
-# Train에서 평균 / 표준편차 계산 + 변환
-X_train_scaled = lstm_scaler.fit_transform(X_train_raw)
+print("\nTrain 기간 :", train_timestamp.min(), "~", train_timestamp.max())
 
 
-# Test는 Train에서 계산된
-# 평균 / 표준편차를 그대로 사용
-X_test_scaled = lstm_scaler.transform(X_test_raw)
-
-
-print("\nLSTM Scaling 완료")
-
-print("Train scaled:", X_train_scaled.shape)
-
-print("Test scaled:", X_test_scaled.shape)
+print("Test 기간 :", test_timestamp.min(), "~", test_timestamp.max())
 
 
 # ============================================================
-# 14. Sequence 생성 함수
+# 5. Cache 설정
 #
-# TIME_STEPS = 30
-#
-# 연속된 30개 시점을
-# 하나의 Sequence로 묶는다.
+# 데이터 구조가 달라졌으면
+# 기존 학습결과를 재사용하지 않음
 # ============================================================
 
-TIME_STEPS = 30
+CACHE_META_PATH = "models/cache_meta.json"
+
+
+SCALER_PATH = "models/standard_scaler.pkl"
+
+
+ISO_MODEL_PATH = "models/isolation_forest.pkl"
+
+
+LSTM_MODEL_PATH = "models/lstm_autoencoder.keras"
+
+
+TRAIN_ERROR_PATH = "results/train_reconstruction_error.npy"
+
+
+TEST_ERROR_PATH = "results/test_reconstruction_error.npy"
+
+
+HISTORY_PATH = "results/lstm_training_history.csv"
+
+
+expected_meta = {
+    "rows": len(analysis_df),
+    "feature_cols": feature_cols,
+    "train_ratio": TRAIN_RATIO,
+    "train_size": train_size,
+    "time_steps": TIME_STEPS,
+    "iso_contamination": ISO_CONTAMINATION,
+}
+
+
+cache_valid = False
+
+
+if os.path.exists(CACHE_META_PATH) and not FORCE_RETRAIN:
+
+    try:
+
+        with open(CACHE_META_PATH, "r", encoding="utf-8") as f:
+
+            saved_meta = json.load(f)
+
+        cache_valid = saved_meta == expected_meta
+
+    except Exception:
+
+        cache_valid = False
+
+
+print("\nCache 사용 가능 :", cache_valid)
+
+
+# ============================================================
+# 6. StandardScaler
+#
+# 반드시 Train만 fit
+# ============================================================
+
+if cache_valid and os.path.exists(SCALER_PATH):
+
+    scaler = joblib.load(SCALER_PATH)
+
+    print("\n저장된 Scaler 불러오기")
+
+
+else:
+
+    scaler = StandardScaler()
+
+    scaler.fit(X_train_raw)
+
+    joblib.dump(scaler, SCALER_PATH)
+
+    print("\nScaler 새로 학습 + 저장")
+
+
+X_train_scaled = scaler.transform(X_train_raw)
+
+
+X_test_scaled = scaler.transform(X_test_raw)
+
+
+# ============================================================
+# ============================================================
+#
+#               Z-SCORE BASELINE
+#
+# ============================================================
+# ============================================================
+
+
+# ============================================================
+# 7. Z-score
+#
+# Train 기준 StandardScaler 값을 활용
+#
+# 여러 센서 중 가장 큰 |Z|를
+# 해당 시점의 이상점수로 사용
+# ============================================================
+
+test_z_scores = np.abs(X_test_scaled)
+
+
+zscore_anomaly_score = test_z_scores.max(axis=1)
+
+
+Z_THRESHOLD = 3.0
+
+
+zscore_anomaly = np.where(zscore_anomaly_score >= Z_THRESHOLD, -1, 1)
+
+
+print("\n==============================")
+print("Z-score Test 결과")
+print("==============================")
+
+
+print(pd.Series(zscore_anomaly).value_counts())
+
+
+print("\n이상 비율 (%)")
+
+
+print(pd.Series(zscore_anomaly).value_counts(normalize=True).mul(100))
+
+
+# ============================================================
+# ============================================================
+#
+#              ISOLATION FOREST
+#
+# ============================================================
+# ============================================================
+
+
+# ============================================================
+# 8. Isolation Forest 학습 / 불러오기
+# ============================================================
+
+if cache_valid and os.path.exists(ISO_MODEL_PATH):
+
+    iso_model = joblib.load(ISO_MODEL_PATH)
+
+    print("\n저장된 Isolation Forest 불러오기")
+
+
+else:
+
+    iso_model = IsolationForest(
+        n_estimators=200, contamination=ISO_CONTAMINATION, random_state=42, n_jobs=-1
+    )
+
+    iso_model.fit(X_train_scaled)
+
+    joblib.dump(iso_model, ISO_MODEL_PATH)
+
+    print("\nIsolation Forest 새로 학습 + 저장")
+
+
+# ============================================================
+# 9. Isolation Forest Test 예측
+# ============================================================
+
+iso_anomaly = iso_model.predict(X_test_scaled)
+
+
+# decision_function은 낮을수록 이상
+#
+# -를 붙여
+# 높을수록 이상하도록 변경
+
+iso_anomaly_score = -iso_model.decision_function(X_test_scaled)
+
+
+print("\n==============================")
+print("Isolation Forest Test 결과")
+print("==============================")
+
+
+print(pd.Series(iso_anomaly).value_counts())
+
+
+print("\n이상 비율 (%)")
+
+
+print(pd.Series(iso_anomaly).value_counts(normalize=True).mul(100))
+
+
+# ============================================================
+# 10. Test 기본 결과 생성
+#
+# 센서값도 함께 보존
+#
+# 나중에 Event 구간의 센서 패턴 분석에 사용
+# ============================================================
+
+test_result_df = analysis_df.iloc[train_size:].reset_index(drop=True).copy()
+
+
+test_result_df["zscore_anomaly_score"] = zscore_anomaly_score
+
+
+test_result_df["zscore_anomaly"] = zscore_anomaly
+
+
+test_result_df["iso_anomaly_score"] = iso_anomaly_score
+
+
+test_result_df["iso_anomaly"] = iso_anomaly
+
+
+# ============================================================
+# ============================================================
+#
+#                LSTM AUTOENCODER
+#
+# ============================================================
+# ============================================================
+
+
+# ============================================================
+# 11. Sequence 생성 함수
+# ============================================================
 
 
 def create_sequences(data, time_steps):
@@ -252,10 +452,11 @@ def create_sequences(data, time_steps):
 
 
 # ============================================================
-# 15. Train / Test Sequence 생성
+# 12. Sequence 생성
 # ============================================================
 
 X_train_lstm = create_sequences(X_train_scaled, TIME_STEPS)
+
 
 X_test_lstm = create_sequences(X_test_scaled, TIME_STEPS)
 
@@ -264,319 +465,588 @@ print("\n==============================")
 print("LSTM Sequence")
 print("==============================")
 
-print("Train Sequence:", X_train_lstm.shape)
 
-print("Test Sequence:", X_test_lstm.shape)
-
-
-# ============================================================
-# 16. LSTM Autoencoder 생성
-# ============================================================
-
-n_features = X_train_lstm.shape[2]
+print("Train :", X_train_lstm.shape)
 
 
-lstm_autoencoder = Sequential(
-    [
-        # ----------------------------
-        # Encoder
-        # ----------------------------
-        LSTM(
-            64,
-            activation="tanh",
-            input_shape=(TIME_STEPS, n_features),
-            return_sequences=False,
-        ),
-        # 압축된 정보를
-        # TIME_STEPS만큼 다시 복제
-        RepeatVector(TIME_STEPS),
-        # ----------------------------
-        # Decoder
-        # ----------------------------
-        LSTM(64, activation="tanh", return_sequences=True),
-        # 원래 Feature 개수만큼 복원
-        TimeDistributed(Dense(n_features)),
-    ]
-)
-
-
-lstm_autoencoder.compile(optimizer="adam", loss="mae")
-
-
-lstm_autoencoder.summary()
+print("Test :", X_test_lstm.shape)
 
 
 # ============================================================
-# 17. Early Stopping
+# 13. LSTM Model 생성 함수
 # ============================================================
 
-early_stop = EarlyStopping(monitor="val_loss", patience=5, restore_best_weights=True)
+
+def build_lstm_autoencoder(time_steps, n_features):
+
+    model = Sequential(
+        [
+            Input(shape=(time_steps, n_features)),
+            # Encoder
+            LSTM(64, activation="tanh", return_sequences=False),
+            RepeatVector(time_steps),
+            # Decoder
+            LSTM(64, activation="tanh", return_sequences=True),
+            TimeDistributed(Dense(n_features)),
+        ]
+    )
+
+    model.compile(optimizer="adam", loss="mae")
+
+    return model
 
 
 # ============================================================
-# 18. LSTM Autoencoder 학습
+# 14. Reconstruction Error
 #
-# 입력값 X를 다시 X로 복원하도록 학습
+# 저장된 Error가 있으면
+# LSTM 학습 및 predict까지 생략
 # ============================================================
 
-history = lstm_autoencoder.fit(
-    X_train_lstm,
-    X_train_lstm,
-    epochs=50,
-    batch_size=64,
-    validation_split=0.2,
-    # 시계열 순서 유지
-    shuffle=False,
-    callbacks=[early_stop],
-    verbose=1,
+use_saved_error = (
+    cache_valid
+    and os.path.exists(TRAIN_ERROR_PATH)
+    and os.path.exists(TEST_ERROR_PATH)
+    and not FORCE_RETRAIN
 )
 
 
+if use_saved_error:
+
+    train_reconstruction_error = np.load(TRAIN_ERROR_PATH)
+
+    test_reconstruction_error = np.load(TEST_ERROR_PATH)
+
+    # 길이까지 검증
+
+    if len(train_reconstruction_error) != len(X_train_lstm) or len(
+        test_reconstruction_error
+    ) != len(X_test_lstm):
+
+        use_saved_error = False
+
+
 # ============================================================
-# 19. Train Reconstruction Error
+# 15. 저장된 Error가 없다면
+# 모델 불러오기 또는 새로 학습
 # ============================================================
 
-train_prediction = lstm_autoencoder.predict(X_train_lstm, batch_size=256)
+if use_saved_error:
+
+    print("\n==============================")
+    print("저장된 LSTM Reconstruction Error 사용")
+    print("==============================")
 
 
-train_reconstruction_error = np.mean(
-    np.abs(train_prediction - X_train_lstm), axis=(1, 2)
-)
+else:
+
+    # --------------------------------------------------------
+    # 저장된 LSTM Model이 존재하면 불러오기
+    # --------------------------------------------------------
+
+    if cache_valid and os.path.exists(LSTM_MODEL_PATH) and not FORCE_RETRAIN:
+
+        lstm_autoencoder = tf.keras.models.load_model(LSTM_MODEL_PATH)
+
+        print("\n저장된 LSTM 모델 불러오기")
+
+    # --------------------------------------------------------
+    # 없다면 새로 학습
+    # --------------------------------------------------------
+
+    else:
+
+        n_features = X_train_lstm.shape[2]
+
+        lstm_autoencoder = build_lstm_autoencoder(TIME_STEPS, n_features)
+
+        print("\n==============================")
+        print("LSTM Autoencoder 새로 학습")
+        print("==============================")
+
+        lstm_autoencoder.summary()
+
+        early_stop = EarlyStopping(
+            monitor="val_loss", patience=5, restore_best_weights=True
+        )
+
+        history = lstm_autoencoder.fit(
+            X_train_lstm,
+            X_train_lstm,
+            epochs=50,
+            batch_size=64,
+            validation_split=0.2,
+            shuffle=False,
+            callbacks=[early_stop],
+            verbose=1,
+        )
+
+        # 모델 저장
+
+        lstm_autoencoder.save(LSTM_MODEL_PATH)
+
+        # 학습 History 저장
+
+        history_df = pd.DataFrame(history.history)
+
+        history_df.to_csv(HISTORY_PATH, index=False, encoding="utf-8-sig")
+
+        # Loss 그래프
+
+        plt.figure(figsize=(8, 4))
+
+        plt.plot(history.history["loss"], label="Train Loss")
+
+        plt.plot(history.history["val_loss"], label="Validation Loss")
+
+        plt.xlabel("Epoch")
+
+        plt.ylabel("MAE")
+
+        plt.title("LSTM Autoencoder Loss")
+
+        plt.legend()
+
+        plt.tight_layout()
+
+        plt.show()
+
+    # ========================================================
+    # 16. Train Reconstruction Error
+    # ========================================================
+
+    train_prediction = lstm_autoencoder.predict(X_train_lstm, batch_size=256)
+
+    train_reconstruction_error = np.mean(
+        np.abs(train_prediction - X_train_lstm), axis=(1, 2)
+    )
+
+    # ========================================================
+    # 17. Test Reconstruction Error
+    # ========================================================
+
+    test_prediction = lstm_autoencoder.predict(X_test_lstm, batch_size=256)
+
+    test_reconstruction_error = np.mean(
+        np.abs(test_prediction - X_test_lstm), axis=(1, 2)
+    )
+
+    # ========================================================
+    # Reconstruction Error 저장
+    #
+    # 다음부터 LSTM 학습 / predict 불필요
+    # ========================================================
+
+    np.save(TRAIN_ERROR_PATH, train_reconstruction_error)
+
+    np.save(TEST_ERROR_PATH, test_reconstruction_error)
+
+    print("\nReconstruction Error 저장 완료")
 
 
-print("\nTrain Reconstruction Error")
+# ============================================================
+# 18. Error 확인
+# ============================================================
+
+print("\n==============================")
+print("Train Reconstruction Error")
+print("==============================")
+
 
 print(pd.Series(train_reconstruction_error).describe())
 
 
-# ============================================================
-# 20. LSTM Threshold
-#
-# Train Reconstruction Error의
-# 상위 1% 기준
-# ============================================================
+print("\n==============================")
+print("Test Reconstruction Error")
+print("==============================")
 
-LSTM_THRESHOLD = np.percentile(train_reconstruction_error, 99)
-
-
-print("\nLSTM Threshold:", LSTM_THRESHOLD)
-
-
-# ============================================================
-# 21. Test 데이터 예측
-# ============================================================
-
-test_prediction = lstm_autoencoder.predict(X_test_lstm, batch_size=256)
-
-
-# ============================================================
-# 22. Test Reconstruction Error
-# ============================================================
-
-test_reconstruction_error = np.mean(np.abs(test_prediction - X_test_lstm), axis=(1, 2))
-
-
-print("\nTest Reconstruction Error")
 
 print(pd.Series(test_reconstruction_error).describe())
 
 
 # ============================================================
-# 23. Test 이상 판정
+# 19. LSTM Timestamp
 #
-# Train에서 정한 Threshold보다
-# Reconstruction Error가 크면 이상
-#
-# 1  = 정상
-# -1 = 이상
+# Sequence 마지막 시점을 대표 timestamp로 사용
 # ============================================================
 
-test_lstm_anomaly = np.where(test_reconstruction_error > LSTM_THRESHOLD, -1, 1)
+lstm_timestamp = test_timestamp.iloc[TIME_STEPS - 1 :].reset_index(drop=True)
 
 
-# ============================================================
-# 24. Test 결과 DataFrame 생성
-#
-# Sequence 하나의 timestamp는
-# 해당 Sequence의 마지막 시점을 사용
-# ============================================================
-
-test_start_index = train_size + TIME_STEPS - 1
-
-
-lstm_df = pd.DataFrame(
-    {
-        "timestamp": df["timestamp"]
-        .iloc[test_start_index : test_start_index + len(test_reconstruction_error)]
-        .reset_index(drop=True),
-        "lstm_anomaly_score": test_reconstruction_error,
-        "lstm_anomaly": test_lstm_anomaly,
-    }
+lstm_base_df = pd.DataFrame(
+    {"timestamp": lstm_timestamp, "lstm_anomaly_score": test_reconstruction_error}
 )
 
 
 # ============================================================
-# 25. LSTM 결과 확인
+# 20. Test 결과와 LSTM 결과 합치기
 # ============================================================
+
+compare_df = test_result_df.merge(lstm_base_df, on="timestamp", how="inner")
+
+
+# ============================================================
+# 21. IF Flag
+#
+# 0 정상
+# 1 이상
+# ============================================================
+
+compare_df["iso_flag"] = (compare_df["iso_anomaly"] == -1).astype(int)
+
+
+# ============================================================
+# 22. Event 생성 함수
+#
+# 30분 이내에 다시 이상이 발생하면
+# 같은 Event로 묶음
+# ============================================================
+
+
+def make_events(data, flag_col, lstm_score_col, percentile, threshold):
+
+    candidate_df = data[data[flag_col] == 1].copy()
+
+    # 후보 없음
+
+    if len(candidate_df) == 0:
+
+        return pd.DataFrame()
+
+    candidate_df = candidate_df.sort_values("timestamp").reset_index(drop=True)
+
+    # 이전 이상과 시간 간격
+
+    candidate_df["time_gap"] = candidate_df["timestamp"].diff()
+
+    event_gap = pd.Timedelta(minutes=EVENT_GAP_MINUTES)
+
+    # 첫 데이터이거나
+    # 이전 이상보다 30분 이상 떨어졌으면
+    # 새로운 Event
+
+    candidate_df["new_event"] = (
+        candidate_df["time_gap"].isna() | (candidate_df["time_gap"] > event_gap)
+    ).astype(int)
+
+    candidate_df["event_id"] = candidate_df["new_event"].cumsum()
+
+    event_df = (
+        candidate_df.groupby("event_id")
+        .agg(
+            start_time=("timestamp", "min"),
+            end_time=("timestamp", "max"),
+            anomaly_points=("timestamp", "count"),
+            max_iso_score=("iso_anomaly_score", "max"),
+            max_lstm_score=(lstm_score_col, "max"),
+        )
+        .reset_index()
+    )
+
+    # Event 지속시간
+
+    event_df["duration_min"] = (
+        event_df["end_time"] - event_df["start_time"]
+    ).dt.total_seconds() / 60
+
+    event_df["percentile"] = percentile
+
+    event_df["threshold"] = threshold
+
+    return event_df
+
+
+# ============================================================
+# ============================================================
+#
+#      95 / 97 / 99 Threshold Sensitivity Analysis
+#
+# ============================================================
+# ============================================================
+
+
+# ============================================================
+# 23. 분석 기간
+#
+# 실제 데이터가 존재하는 날짜 수
+# ============================================================
+
+analysis_days = compare_df["timestamp"].dt.date.nunique()
+
 
 print("\n==============================")
-print("LSTM Autoencoder Test 결과")
+print("분석 기간")
 print("==============================")
 
-print(lstm_df["lstm_anomaly"].value_counts())
 
-
-print("\nLSTM Test 이상 비율")
-
-print(lstm_df["lstm_anomaly"].value_counts(normalize=True) * 100)
+print("분석 날짜 수 :", analysis_days)
 
 
 # ============================================================
-# 26. LSTM 이상 데이터 확인
+# 24. Threshold별 결과
 # ============================================================
 
-lstm_anomaly_df = lstm_df[lstm_df["lstm_anomaly"] == -1]
+threshold_summary = []
+
+all_event_dfs = []
 
 
-print("\nLSTM 이상 데이터 개수")
+for percentile in LSTM_PERCENTILES:
 
-print(len(lstm_anomaly_df))
+    # --------------------------------------------------------
+    # Train Error 기준 Threshold 계산
+    # --------------------------------------------------------
 
+    threshold = np.percentile(train_reconstruction_error, percentile)
 
-print("\nLSTM 이상 데이터 예시")
+    # --------------------------------------------------------
+    # LSTM 이상 여부
+    # --------------------------------------------------------
 
-print(lstm_anomaly_df.head(20))
+    lstm_flag_col = f"lstm_flag_p{percentile}"
+
+    compare_df[lstm_flag_col] = (compare_df["lstm_anomaly_score"] > threshold).astype(
+        int
+    )
+
+    # --------------------------------------------------------
+    # IF + LSTM 공통 이상
+    # --------------------------------------------------------
+
+    candidate_col = f"if_lstm_candidate_p{percentile}"
+
+    compare_df[candidate_col] = (
+        (compare_df["iso_flag"] == 1) & (compare_df[lstm_flag_col] == 1)
+    ).astype(int)
+
+    # --------------------------------------------------------
+    # LSTM 이상 개수
+    # --------------------------------------------------------
+
+    lstm_anomaly_count = compare_df[lstm_flag_col].sum()
+
+    lstm_anomaly_ratio = lstm_anomaly_count / len(compare_df) * 100
+
+    # --------------------------------------------------------
+    # IF + LSTM 공통 시점 개수
+    # --------------------------------------------------------
+
+    common_count = compare_df[candidate_col].sum()
+
+    # --------------------------------------------------------
+    # LSTM 자체 Event
+    # --------------------------------------------------------
+
+    lstm_event_df = make_events(
+        compare_df, lstm_flag_col, "lstm_anomaly_score", percentile, threshold
+    )
+
+    # --------------------------------------------------------
+    # IF + LSTM Event
+    # --------------------------------------------------------
+
+    ensemble_event_df = make_events(
+        compare_df, candidate_col, "lstm_anomaly_score", percentile, threshold
+    )
+
+    lstm_event_count = len(lstm_event_df)
+
+    ensemble_event_count = len(ensemble_event_df)
+
+    # --------------------------------------------------------
+    # 하루 평균 Event
+    # --------------------------------------------------------
+
+    if analysis_days > 0:
+
+        lstm_daily_avg = lstm_event_count / analysis_days
+
+        ensemble_daily_avg = ensemble_event_count / analysis_days
+
+    else:
+
+        lstm_daily_avg = 0
+
+        ensemble_daily_avg = 0
+
+    # --------------------------------------------------------
+    # 요약 저장
+    # --------------------------------------------------------
+
+    threshold_summary.append(
+        {
+            "percentile": percentile,
+            "threshold": threshold,
+            "lstm_anomaly_points": lstm_anomaly_count,
+            "lstm_anomaly_ratio_percent": lstm_anomaly_ratio,
+            "lstm_event_count": lstm_event_count,
+            "lstm_daily_avg_event": lstm_daily_avg,
+            "if_lstm_common_points": common_count,
+            "if_lstm_event_count": ensemble_event_count,
+            "if_lstm_daily_avg_event": ensemble_daily_avg,
+        }
+    )
+
+    # --------------------------------------------------------
+    # Event별 파일 저장
+    # --------------------------------------------------------
+
+    if len(lstm_event_df) > 0:
+
+        lstm_event_df.to_csv(
+            f"results/lstm_events_p{percentile}.csv", index=False, encoding="utf-8-sig"
+        )
+
+    if len(ensemble_event_df) > 0:
+
+        ensemble_event_df.to_csv(
+            f"results/if_lstm_events_p{percentile}.csv",
+            index=False,
+            encoding="utf-8-sig",
+        )
+
+        temp = ensemble_event_df.copy()
+
+        temp["model"] = "IF + LSTM"
+
+        all_event_dfs.append(temp)
 
 
 # ============================================================
-# 27. LSTM Reconstruction Error 시계열 그래프
+# 25. Threshold 비교표
 # ============================================================
 
-plt.figure(figsize=(14, 5))
+threshold_summary_df = pd.DataFrame(threshold_summary)
+
+
+print("\n==============================")
+print("LSTM Threshold 비교")
+print("==============================")
+
+
+print(threshold_summary_df.round(4).to_string(index=False))
+
+
+# ============================================================
+# 26. Threshold 비교 그래프
+#
+# 하루 평균 IF + LSTM Event 수
+# ============================================================
+
+plt.figure(figsize=(8, 5))
 
 
 plt.plot(
-    lstm_df["timestamp"], lstm_df["lstm_anomaly_score"], label="Reconstruction Error"
+    threshold_summary_df["percentile"],
+    threshold_summary_df["if_lstm_daily_avg_event"],
+    marker="o",
 )
 
 
-plt.axhline(y=LSTM_THRESHOLD, linestyle="--", label="Threshold")
+plt.xlabel("LSTM Percentile")
 
 
-plt.xlabel("Time")
+plt.ylabel("Daily Average Event")
 
-plt.ylabel("Reconstruction Error")
 
-plt.title("LSTM Autoencoder Test Anomaly Score")
+plt.title("Threshold vs Daily IF + LSTM Events")
 
-plt.legend()
+
+plt.xticks(LSTM_PERCENTILES)
+
 
 plt.tight_layout()
+
 
 plt.show()
 
 
 # ============================================================
-# 28. 모델 결과 비교
-#
-# LSTM은 Test 구간에서만 평가했으므로
-# timestamp 기준으로 합친다.
+# 27. Threshold별 전체 결과 저장
 # ============================================================
 
-compare_df = df.merge(lstm_df, on="timestamp", how="inner")
-
-
-# ============================================================
-# 29. 세 방법 모두 이상
-# ============================================================
-
-all_three = compare_df[
-    (compare_df["zscore_anomaly"] == -1)
-    & (compare_df["anomaly"] == -1)
-    & (compare_df["lstm_anomaly"] == -1)
-]
-
-
-# ============================================================
-# 30. Isolation Forest + LSTM 공통 이상
-# ============================================================
-
-iso_lstm = compare_df[
-    (compare_df["anomaly"] == -1) & (compare_df["lstm_anomaly"] == -1)
-]
-
-
-# ============================================================
-# 31. LSTM만 이상
-# ============================================================
-
-lstm_only = compare_df[
-    (compare_df["anomaly"] == 1) & (compare_df["lstm_anomaly"] == -1)
-]
-
-
-# ============================================================
-# 32. Isolation Forest만 이상
-# ============================================================
-
-iso_only = compare_df[(compare_df["anomaly"] == -1) & (compare_df["lstm_anomaly"] == 1)]
-
-
-# ============================================================
-# 33. 비교 결과 출력
-# ============================================================
-
-print("\n==============================")
-print("모델 비교")
-print("==============================")
-
-print("비교 대상 Test Sequence:", len(compare_df))
-
-print("세 방법 공통 :", len(all_three))
-
-print("IF + LSTM 공통 :", len(iso_lstm))
-
-print("LSTM만 :", len(lstm_only))
-
-print("IF만 :", len(iso_only))
-
-
-# ============================================================
-# 34. Pseudo Label 생성
-#
-# 0 = 정상
-# 1 = 이상
-#
-# Isolation Forest와 LSTM이
-# 모두 이상이라고 판단한 경우만 이상으로 설정
-# ============================================================
-
-compare_df["pseudo_label"] = np.where(
-    (compare_df["anomaly"] == -1) & (compare_df["lstm_anomaly"] == -1), 1, 0
+threshold_summary_df.to_csv(
+    "results/lstm_threshold_event_summary.csv", index=False, encoding="utf-8-sig"
 )
 
 
+# ============================================================
+# 28. 모든 이상점수 / Flag 저장
+#
+# 나중에 모델 재학습 없이
+# 바로 분석 가능
+# ============================================================
+
+compare_df.to_csv("results/anomaly_score_result.csv", index=False, encoding="utf-8-sig")
+
+
+# ============================================================
+# 29. 모든 IF + LSTM Event 통합 저장
+# ============================================================
+
+if all_event_dfs:
+
+    all_events_df = pd.concat(all_event_dfs, ignore_index=True)
+
+    all_events_df.to_csv(
+        "results/all_if_lstm_events.csv", index=False, encoding="utf-8-sig"
+    )
+
+
+# ============================================================
+# 30. Cache Metadata 저장
+#
+# 다음 실행부터
+# 데이터 구조가 같으면 저장된 모델 사용
+# ============================================================
+
+with open(CACHE_META_PATH, "w", encoding="utf-8") as f:
+
+    json.dump(expected_meta, f, ensure_ascii=False, indent=2)
+
+
+# ============================================================
+# 31. 최종 출력
+# ============================================================
+
 print("\n==============================")
-print("Pseudo Label 분포")
+print("분석 완료")
 print("==============================")
 
-print(compare_df["pseudo_label"].value_counts())
 
-print("\nPseudo Label 비율 (%)")
-print(compare_df["pseudo_label"].value_counts(normalize=True).mul(100))
+print("\n[저장된 모델]")
+
+print(SCALER_PATH)
+
+print(ISO_MODEL_PATH)
+
+print(LSTM_MODEL_PATH)
 
 
-# ============================================================
-# 35. Pseudo Label 포함 결과 저장
-# ============================================================
+print("\n[저장된 Reconstruction Error]")
 
-import os
+print(TRAIN_ERROR_PATH)
 
-os.makedirs(
-    "results", exist_ok=True
-)  # results라는 폴더 만들어라~ exist_ok(이미 있어도 오류 X 그냥 넘어가라)
+print(TEST_ERROR_PATH)
 
-compare_df.to_csv("results/pseudo_label_data.csv", index=False, encoding="utf-8-sig")
 
-print("\n저장 완료!")
-print("results/pseudo_label_data.csv")
+print("\n[분석 결과]")
+
+print("results/anomaly_score_result.csv")
+
+print("results/lstm_threshold_event_summary.csv")
+
+print("results/lstm_events_p95.csv")
+
+print("results/lstm_events_p97.csv")
+
+print("results/lstm_events_p99.csv")
+
+print("results/if_lstm_events_p95.csv")
+
+print("results/if_lstm_events_p97.csv")
+
+print("results/if_lstm_events_p99.csv")
+
+
+print("\n다음 실행부터 FORCE_RETRAIN=False이면 " "저장된 결과를 재사용합니다.")
