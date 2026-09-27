@@ -1050,3 +1050,256 @@ print("results/if_lstm_events_p99.csv")
 
 
 print("\n다음 실행부터 FORCE_RETRAIN=False이면 " "저장된 결과를 재사용합니다.")
+
+# ============================================================
+# ============================================================
+#
+#       마지막 단계 : 실제 정답 Label로 최종 검증
+#
+# ============================================================
+# ============================================================
+
+from sklearn.metrics import (
+    confusion_matrix,
+    precision_score,
+    recall_score,
+    f1_score,
+    accuracy_score,
+)
+
+# ============================================================
+# 32. 원본 데이터에서 실제 machine_status 불러오기
+#
+# ★ 여기서 처음으로 정답 Label을 사용
+# ★ 모델 학습에는 사용하지 않았음
+#
+# machine_status
+# 0 = 정상
+# 1 = 이상
+# ============================================================
+
+raw_df = pd.read_csv("data/sensor.csv", parse_dates=["timestamp"])
+
+
+label_df = raw_df[["timestamp", "machine_status"]].copy()
+
+
+print("\n==============================")
+print("실제 machine_status 확인")
+print("==============================")
+
+
+print(label_df["machine_status"].value_counts())
+
+
+# ============================================================
+# 33. 모델 결과와 실제 Label 결합
+#
+# timestamp 기준으로 연결
+# ============================================================
+
+final_df = compare_df.merge(label_df, on="timestamp", how="left")
+
+
+print("\n실제 Label 결합 후 데이터 크기")
+print(final_df.shape)
+
+print("\nmachine_status 결측치")
+print(final_df["machine_status"].isna().sum())
+
+
+# 혹시 timestamp 매칭이 안 된 행이 있으면 제외
+final_df = final_df.dropna(subset=["machine_status"]).reset_index(drop=True)
+
+
+# ============================================================
+# machine_status 범주형 처리
+#
+# NORMAL = 0
+# BROKEN = 1
+# RECOVERING = 최종 고장 탐지 평가에서는 제외
+# ============================================================
+
+eval_df = final_df[final_df["machine_status"].isin(["NORMAL", "BROKEN"])].copy()
+
+eval_df["machine_status_binary"] = eval_df["machine_status"].map(
+    {"NORMAL": 0, "BROKEN": 1}
+)
+
+print("\n최종 평가용 machine_status")
+print(eval_df["machine_status_binary"].value_counts())
+
+
+# ============================================================
+# 34. 95 / 97 / 99 Threshold별
+#     실제 Label과 비교
+#
+# 비교 대상:
+#
+# IF + LSTM 공통 이상 후보
+#
+# if_lstm_candidate_p95
+# if_lstm_candidate_p97
+# if_lstm_candidate_p99
+# ============================================================
+
+ground_truth_results = []
+
+
+for percentile in LSTM_PERCENTILES:
+
+    pred_col = f"if_lstm_candidate_p{percentile}"
+
+    # --------------------------------------------------------
+    # 실제 정답
+    # --------------------------------------------------------
+
+    y_true = eval_df["machine_status_binary"]
+
+    # --------------------------------------------------------
+    # 모델 예측
+    #
+    # 0 = 정상
+    # 1 = 이상
+    # --------------------------------------------------------
+
+    y_pred = eval_df[pred_col]
+
+    # --------------------------------------------------------
+    # Confusion Matrix
+    # --------------------------------------------------------
+
+    tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
+
+    # --------------------------------------------------------
+    # 성능 지표
+    # --------------------------------------------------------
+
+    precision = precision_score(y_true, y_pred, zero_division=0)
+
+    recall = recall_score(y_true, y_pred, zero_division=0)
+
+    f1 = f1_score(y_true, y_pred, zero_division=0)
+
+    accuracy = accuracy_score(y_true, y_pred)
+
+    # --------------------------------------------------------
+    # False Positive Rate
+    #
+    # 실제 정상 중
+    # 잘못 이상이라고 판단한 비율
+    # --------------------------------------------------------
+
+    if (fp + tn) > 0:
+
+        false_positive_rate = fp / (fp + tn)
+
+    else:
+
+        false_positive_rate = 0
+
+    # --------------------------------------------------------
+    # False Negative Rate
+    #
+    # 실제 이상 중
+    # 놓친 비율
+    # --------------------------------------------------------
+
+    if (fn + tp) > 0:
+
+        false_negative_rate = fn / (fn + tp)
+
+    else:
+
+        false_negative_rate = 0
+
+    # --------------------------------------------------------
+    # 결과 저장
+    # --------------------------------------------------------
+
+    ground_truth_results.append(
+        {
+            "percentile": percentile,
+            "TN": tn,
+            "FP": fp,
+            "FN": fn,
+            "TP": tp,
+            "precision": precision,
+            "recall": recall,
+            "f1_score": f1,
+            "accuracy": accuracy,
+            "false_positive_rate": false_positive_rate,
+            "false_negative_rate": false_negative_rate,
+        }
+    )
+
+    # --------------------------------------------------------
+    # 콘솔 출력
+    # --------------------------------------------------------
+
+    print("\n==============================")
+
+    print(f"LSTM {percentile}% " "+ Isolation Forest")
+
+    print("==============================")
+
+    print("TN :", tn)
+
+    print("FP :", fp, "← 오경보")
+
+    print("FN :", fn, "← 미탐지")
+
+    print("TP :", tp)
+
+    print("\nPrecision :", round(precision, 4))
+
+    print("Recall     :", round(recall, 4))
+
+    print("F1-score   :", round(f1, 4))
+
+    print("Accuracy   :", round(accuracy, 4))
+
+    print("오경보율(FPR) :", round(false_positive_rate, 4))
+
+    print("미탐지율(FNR) :", round(false_negative_rate, 4))
+
+
+# ============================================================
+# 35. Threshold별 실제 성능 비교표
+# ============================================================
+
+ground_truth_summary_df = pd.DataFrame(ground_truth_results)
+
+
+print("\n==============================")
+print("최종 실제 Label 비교")
+print("==============================")
+
+
+print(ground_truth_summary_df.round(4).to_string(index=False))
+
+
+# ============================================================
+# 36. 결과 저장
+# ============================================================
+
+ground_truth_summary_df.to_csv(
+    "results/ground_truth_threshold_comparison.csv", index=False, encoding="utf-8-sig"
+)
+
+
+# 실제 Label까지 붙은 전체 결과도 저장
+final_df.to_csv(
+    "results/final_result_with_machine_status.csv", index=False, encoding="utf-8-sig"
+)
+
+
+print("\n==============================")
+print("실제 Label 검증 완료")
+print("==============================")
+
+
+print("성능 비교 : " "results/ground_truth_threshold_comparison.csv")
+
+
+print("전체 결과 : " "results/final_result_with_machine_status.csv")
