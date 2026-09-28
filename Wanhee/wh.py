@@ -59,8 +59,21 @@ for col in df.columns:
 print(result)
 
 print("=====================")
-# 연속된 결측치가 5개 이하면 살리고 초과하면 없애
+# 전부 결측이거나 결측치 비율이 높은 컬럼 제거 15, 00, 50, 51
 
+# 제거할 센서 컬럼
+drop_cols = ["sensor_15", "sensor_00", "sensor_50", "sensor_51"]
+
+# 실제 존재하는 컬럼만 제거
+df = df.drop(columns=drop_cols, errors="ignore")
+
+# 남은 센서 컬럼 확인
+sensor_cols = [col for col in df.columns if col.startswith("sensor_")]
+
+print("남은 센서 개수:", len(sensor_cols))
+print(sensor_cols)
+print(df.isna().mean().sort_values(ascending=False).head(10))
+print("=====================")
 
 ## 다운샘플링으로 추세를 파악해보려함
 df = df[2:-1]  # time stamp와 machine_status 열을 제외한 센서컬럼들
@@ -85,12 +98,41 @@ print("변화율:", pct)
 ####
 # 각 컬럼별 리샘플링 후 시각화로 추세 파악
 
-for c in df.columns[2:-1]:
-    plt.figure(figsize=(12, 5))
-    plt.plot(df_5min_m.index, df_5min_m[c], label=c, alpha=0.4)
-    #    plt.plot(rol_mean.index, rol_mean[c], label=c, linewidth=2)
-    plt.xlabel("Timestamp")
-    plt.title("5min Rolling Mean")
-    plt.legend()
-    plt.grid(True)
+# for c in df.columns[2:-1]:
+#    plt.figure(figsize=(12, 5))
+#    plt.plot(df_5min_m.index, df_5min_m[c], label=c, alpha=0.4)
+#    plt.plot(rol_mean.index, rol_mean[c], label=c, linewidth=2)
+#    plt.xlabel("Timestamp")
+#    plt.title("5min Rolling Mean")
+#    plt.legend()
+#    plt.grid(True)
+#    plt.show()
+print("=====================")
+
+sensor_cols = df.columns[1:-1]  # 기존에 사용하던 컬럼 범위
+
+group_size = 6
+
+for i in range(0, len(sensor_cols), group_size):
+    cols = sensor_cols[i : i + group_size]
+
+    fig, axes = plt.subplots(
+        nrows=len(cols), ncols=1, figsize=(14, 2.5 * len(cols)), sharex=True
+    )
+
+    # cols가 1개만 남는 경우 axes가 리스트가 아닐 수 있어서 처리
+    if len(cols) == 1:
+        axes = [axes]
+
+    for ax, c in zip(axes, cols):
+        ax.plot(df_h_m.index, df_h_m[c], label=c, alpha=0.7)
+        ax.set_title(c)
+        ax.grid(True)
+        ax.legend(loc="upper right")
+
+    axes[-1].set_xlabel("Timestamp")
+
+    fig.suptitle(f"5min Rolling Mean Sensors {i + 1} ~ {i + len(cols)}", fontsize=16)
+
+    plt.tight_layout()
     plt.show()
