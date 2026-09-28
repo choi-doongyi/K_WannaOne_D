@@ -43,165 +43,139 @@ def set_korean_font():
 # sns.set_theme(style="whitegrid") # 필요하면 주석 해제
 selected_font = set_korean_font()
 print("사용 폰트:", selected_font)
-
+# ===================================================================
 df = pd.read_csv("data/sensor.csv")
-print(df.shape)
-print(df.isna().sum().value_counts())
 
 # 불필요한 인덱스 컬럼 제거
 df = df.drop(columns=["Unnamed: 0"], errors="ignore")
 
-# 시간 컬럼 변환 및 정렬
+# timestamp 변환 및 정렬
 df["timestamp"] = pd.to_datetime(df["timestamp"])
 df = df.sort_values("timestamp").reset_index(drop=True)
 
-# 결측률 확인
-missing_rate = df.isna().mean().sort_values(ascending=False)
-print(missing_rate)
+# 센서 컬럼 추출 및 전체 결측 센서 제거
+sensor_cols = [col for col in df.columns if col.startswith("sensor_")]
 
-# 전체가 결측인 센서 제거
-all_missing = [
-    col for col in df.columns
-    if col.startswith("sensor_") and df[col].isna().all()
-]
+all_missing_cols = [col for col in sensor_cols if df[col].isna().all()]
 
-df = df.drop(columns=all_missing)
+df = df.drop(columns=all_missing_cols)
+sensor_cols = [col for col in sensor_cols if col not in all_missing_cols]
 
-# 센서 컬럼 목록
-sensor_columns = [
+# 센서를 연속형과 이산형 후보로 분류
+nunique = df[sensor_cols].nunique()
+discrete_cols = nunique[nunique <= 20].index.tolist()
+continuous_cols = [col for col in sensor_cols if col not in discrete_cols]
+
+# 시간 기준 보간을 위해 timestamp를 인덱스로 설정
+df = df.set_index("timestamp")
+
+# 연속형 센서: 시간 기준, 최대 5개 행까지 보간
+if continuous_cols:
+    df[continuous_cols] = df[continuous_cols].interpolate(
+        method="time",
+        limit=5,
+        limit_direction="both",
+    )
+
+# 이산형 후보 센서: 직전 값으로 최대 5개 행까지 채움
+if discrete_cols:
+    df[discrete_cols] = df[discrete_cols].ffill(limit=5)
+
+# timestamp를 컬럼으로 복구
+df = df.reset_index()
+
+# machine_status는 보간하거나 수정하지 않음
+print("결측 행도 유지한 최종 크기:", df.shape)
+print("센서별 남은 결측 수:")
+print(df[sensor_cols].isna().sum().sort_values(ascending=False).head(10))
+print(df.shape)
+
+# 센서 컬럼만
+sensor_cols = [
     col for col in df.columns
     if col.startswith("sensor_")
 ]
 
-# 시간 순서 기반 결측 보간
-df[sensor_columns] = (
-    df[sensor_columns]
-    .interpolate(method="linear", limit_direction="both")
+X = df[sensor_cols]
+normal_mask = df["machine_status"].eq("NORMAL")
+
+model = IsolationForest(
+    contamination= 0.01,
+    random_state= 42
 )
 
-print(df.info())
+model.fit(X.loc[normal_mask])
+pred = model.predict(X)
+pred_anomaly = pred == -1
 
-sensor_columns = [
-    col for col in df.columns
-    if col.startswith("sensor_")
+# 방식 1: BROKEN만 이상, RECOVERING 제외
+eval_mask_1 = df["machine_status"].isin(["NORMAL", "BROKEN"])
+y_true_1 = df.loc[eval_mask_1, "machine_status"].eq("BROKEN")
+y_pred_1 = pred_anomaly[eval_mask_1]
+
+# 방식 2: RECOVERING과 BROKEN 모두 이상
+y_true_2 = df["machine_status"].isin(["RECOVERING", "BROKEN"])
+y_pred_2 = pred_anomaly
+
+# # 예측 결과를 df의 인덱스에 맞춘 Series로 변환
+pred_anomaly = pd.Series(pred == -1, index=df.index)
+
+# 혼동행렬 계산: 행은 실제, 열은 예측
+cm_1 = confusion_matrix(
+    y_true_1.astype(int),
+    y_pred_1.astype(int),
+    labels=[0, 1],
+)
+
+cm_2 = confusion_matrix(
+    y_true_2.astype(int),
+    y_pred_2.astype(int),
+    labels=[0, 1],
+)
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+ConfusionMatrixDisplay(
+    cm_1,
+    display_labels=["정상", "이상(BROKEN)"],
+).plot(ax=axes[0], cmap="Blues", values_format="d", colorbar=False)
+axes[0].set_title("RECOVERING 제외")
+
+ConfusionMatrixDisplay(
+    cm_2,
+    display_labels=["정상", "이상(RECOVERING/BROKEN)"],
+).plot(ax=axes[1], cmap="Oranges", values_format="d", colorbar=False)
+axes[1].set_title("RECOVERING을 이상으로 포함")
+
+plt.tight_layout()
+# plt.show()
+
+cases = [
+    ("RECOVERING 제외", y_true_1, y_pred_1),
+    ("RECOVERING을 이상으로 포함", y_true_2, y_pred_2),
 ]
 
-missing_by_sensor = (
-    df[sensor_columns]
-      .isna()
-      .sum()
-      .sort_values(ascending=False)
-)
+rows = []
 
-print(missing_by_sensor)
+for name, y_true, y_pred in cases:
+    tn, fp, fn, tp = confusion_matrix(
+        y_true.astype(int),
+        y_pred.astype(int),
+        labels=[0, 1],
+    ).ravel()
 
-zero_count_by_column = (
-    df.eq(0)
-      .sum()
-      .sort_values(ascending=False)
-)
+    rows.append({
+        "평가 기준": name,
+        "Accuracy": accuracy_score(y_true, y_pred),
+        "Precision": precision_score(y_true, y_pred, zero_division=0),
+        "Recall": recall_score(y_true, y_pred, zero_division=0),
+        "F1": f1_score(y_true, y_pred, zero_division=0),
+        "오탐(FP)": fp,
+        "미탐(FN)": fn,
+        "탐지(TP)": tp,
+        "정상 판정(TN)": tn,
+    })
 
-print(zero_count_by_column)
+evaluation_table = pd.DataFrame(rows)
 
-import pandas as pd
-
-df["timestamp"] = pd.to_datetime(df["timestamp"])
-
-sensor_columns = [
-    col for col in df.columns
-    if col.startswith("sensor_")
-]
-
-df["hour"] = df["timestamp"].dt.hour
-
-# 시간대별 센서 0 비율(%)
-zero_ratio_by_hour = (
-    df.groupby("hour")[sensor_columns]
-      .apply(lambda x: x.eq(0).mean() * 100)
-)
-
-print(zero_ratio_by_hour.round(2))
-
-summary = pd.DataFrame({
-    "peak_hour": zero_ratio_by_hour.idxmax(),
-    "peak_zero_ratio(%)": zero_ratio_by_hour.max(),
-    "overall_zero_ratio(%)": (
-        df[sensor_columns].eq(0).mean() * 100
-    )
-})
-
-summary = summary.sort_values(
-    "peak_zero_ratio(%)",
-    ascending=False
-)
-
-print(summary.round(2))
-
-zero_sensors = [
-    "sensor_19", "sensor_13", "sensor_18", "sensor_17",
-    "sensor_22", "sensor_37", "sensor_25", "sensor_12",
-    "sensor_24", "sensor_05", "sensor_11", "sensor_16",
-    "sensor_27", "sensor_23", "sensor_35", "sensor_10",
-    "sensor_20", "sensor_00", "sensor_07", "sensor_01",
-    "sensor_30", "sensor_09",
-]
-
-df["timestamp"] = pd.to_datetime(df["timestamp"])
-df["hour"] = df["timestamp"].dt.hour
-
-zero_ratio_by_hour = (
-    df.groupby("hour")[zero_sensors]
-      .apply(lambda x: x.eq(0).mean() * 100)
-)
-
-print(zero_ratio_by_hour.round(2))
-
-
-zero_ratio_by_status = (
-    df.groupby("machine_status")[zero_sensors]
-      .apply(lambda x: x.eq(0).mean() * 100)
-)
-
-print("\nmachine_status별 0 발생 비율(%):")
-print(zero_ratio_by_status.round(2))
-
-run_results = []
-
-for sensor in zero_sensors:
-    is_zero = df[sensor].eq(0)
-
-    # 0/비0 상태가 바뀔 때마다 그룹 생성
-    group_id = (
-        is_zero
-        .ne(is_zero.shift(fill_value=False))
-        .cumsum()
-    )
-
-    # 연속된 0 구간 길이 계산
-    zero_runs = (
-        is_zero[is_zero]
-        .groupby(group_id)
-        .sum()
-        .astype(int)
-    )
-
-    # 같은 길이의 구간이 몇 번 발생했는지 계산
-    run_frequency = zero_runs.value_counts()
-
-    for run_length, count in run_frequency.items():
-        run_results.append({
-            "sensor": sensor,
-            "zero_run_length": run_length,
-            "occurrence_count": count
-        })
-
-long_zero_runs = pd.DataFrame(run_results)
-
-# 긴 구간부터 출력
-long_zero_runs = long_zero_runs.sort_values(
-    ["zero_run_length", "occurrence_count"],
-    ascending=False
-)
-
-print("\n연속된 0 구간:")
-print(long_zero_runs.head(50))
+print(evaluation_table.round(4).to_string(index=False))
