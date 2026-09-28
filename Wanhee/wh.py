@@ -79,12 +79,9 @@ print("=====================")
 df = df[2:-1]  # time stamp와 machine_status 열을 제외한 센서컬럼들
 df_5min_m = df.resample("5min").mean(numeric_only=True)  # 5분 단위
 
-df_10min_m = df.resample("10min").mean(numeric_only=True)  # 10분
+## df_10min_m = df.resample("10min").mean(numeric_only=True)  # 10분
 
-df_h_m = df.resample("h").mean(numeric_only=True)  # 1시간
-
-print(df_5min_m)
-
+## df_h_m = df.resample("h").mean(numeric_only=True)  # 1시간
 
 ## 이동평균 · 이동표준편차 · 변화율 · 시차 변수 중 3종 이상 생성  (시계열 담당 과제 의무)
 
@@ -94,21 +91,9 @@ pct = df_5min_m.pct_change()  # 변화율
 print("이동평균:", rol_mean)
 print("이동표준편차:", rol_std)
 print("변화율:", pct)
-
 ####
 # 각 컬럼별 리샘플링 후 시각화로 추세 파악
-
-# for c in df.columns[2:-1]:
-#    plt.figure(figsize=(12, 5))
-#    plt.plot(df_5min_m.index, df_5min_m[c], label=c, alpha=0.4)
-#    plt.plot(rol_mean.index, rol_mean[c], label=c, linewidth=2)
-#    plt.xlabel("Timestamp")
-#    plt.title("5min Rolling Mean")
-#    plt.legend()
-#    plt.grid(True)
-#    plt.show()
-print("=====================")
-# 추세를 확인하기 위해 각 센서 컬럼별 h(시간)당 평균을 그래프로 확인함
+# 추세를 확인하기 위해 각 센서 컬럼별 5min당 평균, 표준편차, 변화율을 그래프로 확인함
 sensor_cols = df.columns[1:-1]  # 기존에 사용하던 컬럼 범위
 
 group_size = 6
@@ -120,9 +105,27 @@ for i in range(0, len(sensor_cols), group_size):
         nrows=len(cols), ncols=1, figsize=(14, 2.5 * len(cols)), sharex=True
     )
 
-    # cols가 1개만 남는 경우 axes가 리스트가 아닐 수 있어서 처리
-    if len(cols) == 1:
-        axes = [axes]
+    for ax, c in zip(axes, cols):
+        ax.plot(rol_mean.index, rol_mean[c], label=c, alpha=0.7)
+        ax.set_title(c)
+        ax.grid(True)
+        ax.legend(loc="upper right")
+
+    axes[-1].set_xlabel("Timestamp")
+
+    fig.suptitle(f"5min mean {i + 1} ~ {i + len(cols)}", fontsize=16)
+
+    plt.tight_layout()
+    plt.show()
+
+print("=====================")
+
+for i in range(0, len(sensor_cols), group_size):
+    cols = sensor_cols[i : i + group_size]
+
+    fig, axes = plt.subplots(
+        nrows=len(cols), ncols=1, figsize=(14, 2.5 * len(cols)), sharex=True
+    )
 
     for ax, c in zip(axes, cols):
         ax.plot(rol_std.index, rol_std[c], label=c, alpha=0.7)
@@ -132,7 +135,31 @@ for i in range(0, len(sensor_cols), group_size):
 
     axes[-1].set_xlabel("Timestamp")
 
-    fig.suptitle(f"5min Rolling std Sensors {i + 1} ~ {i + len(cols)}", fontsize=16)
+    fig.suptitle(f"5min std {i + 1} ~ {i + len(cols)}", fontsize=16)
+
+    plt.tight_layout()
+    plt.show()
+
+
+print("=====================")
+
+
+for i in range(0, len(sensor_cols), group_size):
+    cols = sensor_cols[i : i + group_size]
+
+    fig, axes = plt.subplots(
+        nrows=len(cols), ncols=1, figsize=(14, 2.5 * len(cols)), sharex=True
+    )
+
+    for ax, c in zip(axes, cols):
+        ax.plot(pct.index, pct[c], label=c, alpha=0.7)
+        ax.set_title(c)
+        ax.grid(True)
+        ax.legend(loc="upper right")
+
+    axes[-1].set_xlabel("Timestamp")
+
+    fig.suptitle(f"5min pct {i + 1} ~ {i + len(cols)}", fontsize=16)
 
     plt.tight_layout()
     plt.show()
