@@ -37,6 +37,7 @@ df = df.set_index("timestamp").sort_index()
 
 # 데이터 전처리
 
+
 # 연속된 결측치 개수
 print("연속된 결측치 개수")
 print("=====================")
@@ -75,6 +76,7 @@ print(sensor_cols)
 print(df.isna().mean().sort_values(ascending=False).head(10))
 print("=====================")
 
+
 ## 다운샘플링으로 추세를 파악해보려함
 df = df[2:-1]  # time stamp와 machine_status 열을 제외한 센서컬럼들
 df_5min_m = df.resample("5min").mean(numeric_only=True)  # 5분 단위
@@ -98,6 +100,7 @@ sensor_cols = df.columns[1:-1]  # 기존에 사용하던 컬럼 범위
 
 group_size = 6
 
+# 이동평균
 for i in range(0, len(sensor_cols), group_size):
     cols = sensor_cols[i : i + group_size]
 
@@ -119,7 +122,7 @@ for i in range(0, len(sensor_cols), group_size):
     plt.show()
 
 print("=====================")
-
+# 이동표준편차
 for i in range(0, len(sensor_cols), group_size):
     cols = sensor_cols[i : i + group_size]
 
@@ -143,7 +146,7 @@ for i in range(0, len(sensor_cols), group_size):
 
 print("=====================")
 
-
+# 변화율
 for i in range(0, len(sensor_cols), group_size):
     cols = sensor_cols[i : i + group_size]
 
