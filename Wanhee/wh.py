@@ -108,7 +108,7 @@ print("변화율:", pct)
 #    plt.grid(True)
 #    plt.show()
 print("=====================")
-
+# 추세를 확인하기 위해 각 센서 컬럼별 h(시간)당 평균을 그래프로 확인함
 sensor_cols = df.columns[1:-1]  # 기존에 사용하던 컬럼 범위
 
 group_size = 6
@@ -125,14 +125,14 @@ for i in range(0, len(sensor_cols), group_size):
         axes = [axes]
 
     for ax, c in zip(axes, cols):
-        ax.plot(df_h_m.index, df_h_m[c], label=c, alpha=0.7)
+        ax.plot(rol_std.index, rol_std[c], label=c, alpha=0.7)
         ax.set_title(c)
         ax.grid(True)
         ax.legend(loc="upper right")
 
     axes[-1].set_xlabel("Timestamp")
 
-    fig.suptitle(f"5min Rolling Mean Sensors {i + 1} ~ {i + len(cols)}", fontsize=16)
+    fig.suptitle(f"5min Rolling std Sensors {i + 1} ~ {i + len(cols)}", fontsize=16)
 
     plt.tight_layout()
     plt.show()
