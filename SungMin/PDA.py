@@ -2282,3 +2282,453 @@ plt.tight_layout()
 plt.show()
 
 # “고장 발생 순간을 이상으로 분류하는 데는 실패했지만, 고장 전에 reconstruction error가 점진적으로 커지는 경향은 보였다.”
+
+
+# ============================================================
+# 47. Isolation Forest Contamination 민감도 분석
+#
+# 1% / 2% / 3% / 5% 비교
+#
+# 기존 모델은 그대로 두고,
+# 비교용 Isolation Forest를 새로 학습한다.
+# ============================================================
+
+ISO_CONTAMINATIONS = [
+    0.01,
+    0.02,
+    0.03,
+    0.05,
+]
+
+
+iso_contamination_results = []
+
+
+# ============================================================
+# 실제 Label
+#
+# eval_df는 이미
+# NORMAL = 0
+# BROKEN = 1
+# 로 만들어져 있음
+# ============================================================
+
+y_true = eval_df["machine_status_binary"]
+
+
+# ============================================================
+# Contamination별 반복
+# ============================================================
+
+for contamination in ISO_CONTAMINATIONS:
+
+    print("\n==============================")
+    print(f"Isolation Forest contamination = {contamination}")
+    print("==============================")
+
+    # --------------------------------------------------------
+    # 새로운 Isolation Forest 생성
+    # --------------------------------------------------------
+
+    temp_iso_model = IsolationForest(
+        n_estimators=200,
+        contamination=contamination,
+        random_state=42,
+        n_jobs=-1,
+    )
+
+    # --------------------------------------------------------
+    # Train 데이터로 학습
+    # --------------------------------------------------------
+
+    temp_iso_model.fit(X_train_scaled)
+
+    # --------------------------------------------------------
+    # 전체 Test 예측
+    #
+    # Isolation Forest 기본 출력:
+    #
+    #  1 = 정상
+    # -1 = 이상
+    # --------------------------------------------------------
+
+    temp_iso_pred = temp_iso_model.predict(X_test_scaled)
+
+    # --------------------------------------------------------
+    # 0/1 Flag로 변환
+    #
+    # 0 = 정상
+    # 1 = 이상
+    # --------------------------------------------------------
+
+    temp_iso_flag = (temp_iso_pred == -1).astype(int)
+
+    # --------------------------------------------------------
+    # Test Timestamp와 예측 결과 연결
+    #
+    # eval_df는 LSTM Sequence가 존재하는 시점만
+    # 남아 있으므로 timestamp 기준 merge를 사용
+    # --------------------------------------------------------
+
+    temp_iso_df = pd.DataFrame(
+        {
+            "timestamp": test_timestamp,
+            "temp_iso_flag": temp_iso_flag,
+        }
+    )
+
+    temp_eval_df = eval_df[
+        [
+            "timestamp",
+            "machine_status_binary",
+        ]
+    ].merge(
+        temp_iso_df,
+        on="timestamp",
+        how="left",
+    )
+
+    # 혹시 Timestamp 매칭 실패가 있으면 제거
+    temp_eval_df = temp_eval_df.dropna(subset=["temp_iso_flag"]).reset_index(drop=True)
+
+    # --------------------------------------------------------
+    # 실제 / 예측
+    # --------------------------------------------------------
+
+    temp_y_true = temp_eval_df["machine_status_binary"]
+
+    temp_y_pred = temp_eval_df["temp_iso_flag"].astype(int)
+
+    # --------------------------------------------------------
+    # Confusion Matrix
+    # --------------------------------------------------------
+
+    tn, fp, fn, tp = confusion_matrix(
+        temp_y_true,
+        temp_y_pred,
+        labels=[0, 1],
+    ).ravel()
+
+    # --------------------------------------------------------
+    # 평가 지표
+    # --------------------------------------------------------
+
+    precision = precision_score(
+        temp_y_true,
+        temp_y_pred,
+        zero_division=0,
+    )
+
+    recall = recall_score(
+        temp_y_true,
+        temp_y_pred,
+        zero_division=0,
+    )
+
+    f1 = f1_score(
+        temp_y_true,
+        temp_y_pred,
+        zero_division=0,
+    )
+
+    accuracy = accuracy_score(
+        temp_y_true,
+        temp_y_pred,
+    )
+
+    # --------------------------------------------------------
+    # FPR
+    # --------------------------------------------------------
+
+    if (fp + tn) > 0:
+
+        false_positive_rate = fp / (fp + tn)
+
+    else:
+
+        false_positive_rate = 0
+
+    # --------------------------------------------------------
+    # FNR
+    # --------------------------------------------------------
+
+    if (fn + tp) > 0:
+
+        false_negative_rate = fn / (fn + tp)
+
+    else:
+
+        false_negative_rate = 0
+
+    # --------------------------------------------------------
+    # 예측 이상 개수
+    # --------------------------------------------------------
+
+    predicted_anomaly_count = int(temp_y_pred.sum())
+
+    # --------------------------------------------------------
+    # 결과 저장
+    # --------------------------------------------------------
+
+    iso_contamination_results.append(
+        {
+            "contamination": contamination,
+            "TN": tn,
+            "FP": fp,
+            "FN": fn,
+            "TP": tp,
+            "predicted_anomaly_count": predicted_anomaly_count,
+            "precision": precision,
+            "recall": recall,
+            "f1_score": f1,
+            "accuracy": accuracy,
+            "false_positive_rate": false_positive_rate,
+            "false_negative_rate": false_negative_rate,
+        }
+    )
+
+    # --------------------------------------------------------
+    # 개별 결과 출력
+    # --------------------------------------------------------
+
+    print("TN :", tn)
+    print("FP :", fp, "← 오경보")
+    print("FN :", fn, "← 미탐지")
+    print("TP :", tp)
+
+    print("Recall :", round(recall, 4))
+
+    print("FPR :", round(false_positive_rate, 4))
+
+
+# ============================================================
+# 48. Contamination 비교표
+# ============================================================
+
+iso_contamination_df = pd.DataFrame(iso_contamination_results)
+
+
+print("\n==============================")
+print("Isolation Forest Contamination 비교")
+print("==============================")
+
+
+print(iso_contamination_df.round(4).to_string(index=False))
+
+
+# ============================================================
+# 49. 결과 저장
+# ============================================================
+
+iso_contamination_df.to_csv(
+    "results/isolation_forest_contamination_comparison.csv",
+    index=False,
+    encoding="utf-8-sig",
+)
+
+
+print("\nIsolation Forest Contamination 비교 저장 완료")
+
+print("results/isolation_forest_contamination_comparison.csv")
+
+
+# ============================================================
+# 50. RECOVERING 포함 실제 Label 성능 비교
+#
+# NORMAL      = 0
+# BROKEN      = 1
+# RECOVERING  = 1
+#
+# 기존 모델 재학습은 하지 않음
+# 평가 기준만 변경
+# ============================================================
+
+
+# ------------------------------------------------------------
+# NORMAL / BROKEN / RECOVERING 모두 포함
+# ------------------------------------------------------------
+
+eval_recovery_df = final_df[
+    final_df["machine_status"].isin(["NORMAL", "BROKEN", "RECOVERING"])
+].copy()
+
+
+# ------------------------------------------------------------
+# Binary Label 생성
+#
+# NORMAL      → 0
+# BROKEN      → 1
+# RECOVERING  → 1
+# ------------------------------------------------------------
+
+eval_recovery_df["machine_status_binary"] = eval_recovery_df["machine_status"].map(
+    {
+        "NORMAL": 0,
+        "BROKEN": 1,
+        "RECOVERING": 1,
+    }
+)
+
+
+print("\n==============================")
+print("RECOVERING 포함 실제 Label")
+print("==============================")
+
+
+print(eval_recovery_df["machine_status"].value_counts())
+
+
+print("\nBinary Label")
+
+print(eval_recovery_df["machine_status_binary"].value_counts())
+
+
+# ============================================================
+# Z-score Flag 생성
+#
+# 기존 Z-score:
+#  1 = 정상
+# -1 = 이상
+#
+# 평가용:
+# 0 = 정상
+# 1 = 이상
+# ============================================================
+
+eval_recovery_df["zscore_flag"] = (eval_recovery_df["zscore_anomaly"] == -1).astype(int)
+
+
+# ============================================================
+# 비교할 모델
+# ============================================================
+
+recovery_model_columns = {
+    "Z-score": "zscore_flag",
+    "Isolation Forest": "iso_flag",
+    "LSTM p95": "lstm_flag_p95",
+    "LSTM p97": "lstm_flag_p97",
+    "LSTM p99": "lstm_flag_p99",
+    "IF + LSTM p95": "if_lstm_candidate_p95",
+    "IF + LSTM p97": "if_lstm_candidate_p97",
+    "IF + LSTM p99": "if_lstm_candidate_p99",
+}
+
+
+# ============================================================
+# 모델별 성능 평가
+# ============================================================
+
+recovery_comparison_results = []
+
+
+y_true = eval_recovery_df["machine_status_binary"]
+
+
+for model_name, pred_col in recovery_model_columns.items():
+
+    y_pred = eval_recovery_df[pred_col]
+
+    # --------------------------------------------------------
+    # Confusion Matrix
+    # --------------------------------------------------------
+
+    tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
+
+    # --------------------------------------------------------
+    # 성능 지표
+    # --------------------------------------------------------
+
+    precision = precision_score(y_true, y_pred, zero_division=0)
+
+    recall = recall_score(y_true, y_pred, zero_division=0)
+
+    f1 = f1_score(y_true, y_pred, zero_division=0)
+
+    accuracy = accuracy_score(y_true, y_pred)
+
+    # --------------------------------------------------------
+    # False Positive Rate
+    # --------------------------------------------------------
+
+    if (fp + tn) > 0:
+
+        false_positive_rate = fp / (fp + tn)
+
+    else:
+
+        false_positive_rate = 0
+
+    # --------------------------------------------------------
+    # False Negative Rate
+    # --------------------------------------------------------
+
+    if (fn + tp) > 0:
+
+        false_negative_rate = fn / (fn + tp)
+
+    else:
+
+        false_negative_rate = 0
+
+    # --------------------------------------------------------
+    # 예측 이상 개수
+    # --------------------------------------------------------
+
+    predicted_anomaly_count = int(y_pred.sum())
+
+    # --------------------------------------------------------
+    # 결과 저장
+    # --------------------------------------------------------
+
+    recovery_comparison_results.append(
+        {
+            "model": model_name,
+            "TN": tn,
+            "FP": fp,
+            "FN": fn,
+            "TP": tp,
+            "predicted_anomaly_count": predicted_anomaly_count,
+            "precision": precision,
+            "recall": recall,
+            "f1_score": f1,
+            "accuracy": accuracy,
+            "false_positive_rate": false_positive_rate,
+            "false_negative_rate": false_negative_rate,
+        }
+    )
+
+
+# ============================================================
+# 51. RECOVERING 포함 비교표
+# ============================================================
+
+recovery_comparison_df = pd.DataFrame(recovery_comparison_results)
+
+
+print("\n==============================")
+print("BROKEN + RECOVERING 성능 비교")
+print("==============================")
+
+
+print(recovery_comparison_df.round(4).to_string(index=False))
+
+
+# ============================================================
+# 52. 결과 저장
+# ============================================================
+
+recovery_comparison_df.to_csv(
+    "results/model_comparison_broken_recovering.csv", index=False, encoding="utf-8-sig"
+)
+
+
+print("\nRECOVERING 포함 성능 비교 저장 완료")
+
+print("results/model_comparison_broken_recovering.csv")
+
+# 고장 발생 시점 자체는 비지도 이상탐지 모델이 포착하지 못했으나,
+# 복구 상태를 포함한 비정상 운전 구간에서는 Isolation Forest와 LSTM 기반 모델 모두 유의미한 탐지 성능을 보였다.
+# 특히 IF+LSTM p99 조합은 오경보 없이 45개의 비정상 시점을 탐지했지만,
+# 일부 비정상 상태를 놓치는 trade-off가 존재하였다.
+# Isolation Forest는 Precision 0.7778, Recall 0.6447로 오탐과 미탐 사이에서 가장 균형적인 성능을 보였다.
+# 오탐 미탐의 가중치에 따라  Isolation Forest 와 IF+LSTM p99의 조합을 비중있게 사용해야 할 것 같다.
