@@ -214,7 +214,7 @@ print([col for col in sensor_cols if col not in model_sensor_cols])
 # 모델용 데이터만 따로 만든다.
 # ============================================================
 
-model_df = df[["timestamp"] + model_sensor_cols + missing_flag_cols].copy()
+model_df = model_df = df[["timestamp"] + model_sensor_cols].copy()
 
 
 # ============================================================
@@ -242,7 +242,7 @@ print("제거 :", before_rows - after_rows)
 # timestamp는 모델 입력에서 제외
 # ============================================================
 
-feature_cols = model_sensor_cols + missing_flag_cols
+feature_cols = model_sensor_cols
 
 X = model_df[feature_cols].copy()
 
