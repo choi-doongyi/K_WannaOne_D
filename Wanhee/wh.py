@@ -27,7 +27,7 @@ df = df1.copy()
 df.info()
 print(df.shape)
 print(df.describe())
-print(df.isna().sum())
+print("센서별 결측 개수:", df.isna().sum())
 
 print("=====================")
 
@@ -37,41 +37,60 @@ df = df.set_index("timestamp").sort_index()
 
 # 데이터 전처리
 
+# 연속된 결측치 개수
+print("연속된 결측치 개수")
+print("=====================")
+result = {}
 
-## 규모(3~4달)에 비해 측정단위(1분)이 너무 작기 때문에 다운샘플링으로 추세를 파악해보려함
-df = df[2:-1]  # machine_status 열을 제외함
-df_h_m = df.resample("h").mean(numeric_only=True)  # 시간 단위로 리샘플링 후 평균
-# 시간대 구분 — 24시간 안의 운영 패턴
-df_D_m = df.resample("D").mean(numeric_only=True)  # 일 단위
-# 흐름 부각 — 일별 평균이 추세를 또렷하게
-df_W_m = df.resample("W").mean(numeric_only=True)  # 주 단위
-# 큰 그림 — 시간, 일, 주 단위 평균으로 장기 변화 관찰
-print(df_h_m)
+for col in df.columns:
+    is_na = df[col].isna()
+
+    # 결측/비결측 상태가 바뀔 때마다 그룹 번호 생성
+    group = is_na.ne(is_na.shift()).cumsum()
+
+    # 결측치 구간만 골라서 각 구간의 길이 계산
+    na_run_lengths = is_na.groupby(group).sum()
+
+    # 0이 아닌 값만 남기기
+    na_run_lengths = na_run_lengths[na_run_lengths > 0]
+
+    result[col] = list(na_run_lengths)
+
+print(result)
+
+print("=====================")
+# 연속된 결측치가 5개 이하면 살리고 초과하면 없애
+
+
+## 다운샘플링으로 추세를 파악해보려함
+df = df[2:-1]  # time stamp와 machine_status 열을 제외한 센서컬럼들
+df_5min_m = df.resample("5min").mean(numeric_only=True)  # 5분 단위
+
+df_10min_m = df.resample("10min").mean(numeric_only=True)  # 10분
+
+df_h_m = df.resample("h").mean(numeric_only=True)  # 1시간
+
+print(df_5min_m)
+
 
 ## 이동평균 · 이동표준편차 · 변화율 · 시차 변수 중 3종 이상 생성  (시계열 담당 과제 의무)
 
-rol_mean = df_D_m.rolling(window=5).mean()  # 다운샘플링한 데이터의 이동평균
-rol_std = df_D_m.rolling(window=5).std()  # 이동표준편차
-pct = df_D_m.pct_change()  # 변화율
-print(rol_mean)
-
+rol_mean = df_5min_m.rolling(window=5).mean()  # 다운샘플링한 데이터의 이동평균
+rol_std = df_5min_m.rolling(window=5).std()  # 이동표준편차
+pct = df_5min_m.pct_change()  # 변화율
+print("이동평균:", rol_mean)
+print("이동표준편차:", rol_std)
+print("변화율:", pct)
 
 ####
-
-# df["failure_soon"] = ###선별한 이상후보구간에 맞는경우
-
-feature_cols = df.columns[2:-1]
-X = df[feature_cols]
-y = df["failure_soon"]
-
+# 각 컬럼별 리샘플링 후 시각화로 추세 파악
 
 for c in df.columns[2:-1]:
     plt.figure(figsize=(12, 5))
-    plt.plot(df_D_m.index, df_D_m[c], label=c, alpha=0.4)
-    plt.plot(rol_mean.index, rol_mean[c], label=c, linewidth=2)
-
+    plt.plot(df_5min_m.index, df_5min_m[c], label=c, alpha=0.4)
+    #    plt.plot(rol_mean.index, rol_mean[c], label=c, linewidth=2)
     plt.xlabel("Timestamp")
-    plt.title("Day Mean and Rolling Mean")
+    plt.title("5min Rolling Mean")
     plt.legend()
     plt.grid(True)
     plt.show()
