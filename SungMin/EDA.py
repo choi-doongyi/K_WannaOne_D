@@ -6,7 +6,7 @@ import numpy as np
 # ============================================================
 
 df = pd.read_csv("data/sensor.csv")
-#
+
 print("원본 데이터 크기:", df.shape)
 
 
@@ -138,7 +138,7 @@ df = df.set_index("timestamp")
 # ============================================================
 # 10. 연속형 센서 결측 처리
 #
-# 5분 이하의 짧은 결측구간만 시간 기반 보간
+# 연속된 결측치 5개 이하의 짧은 결측구간만 시간 기반 보간
 #
 # 긴 결측구간은 억지로 채우지 않음
 # ============================================================
@@ -214,7 +214,7 @@ print([col for col in sensor_cols if col not in model_sensor_cols])
 # 모델용 데이터만 따로 만든다.
 # ============================================================
 
-model_df = df[["timestamp"] + model_sensor_cols + missing_flag_cols].copy()
+model_df = model_df = df[["timestamp"] + model_sensor_cols].copy()
 
 
 # ============================================================
@@ -242,7 +242,7 @@ print("제거 :", before_rows - after_rows)
 # timestamp는 모델 입력에서 제외
 # ============================================================
 
-feature_cols = model_sensor_cols + missing_flag_cols
+feature_cols = model_sensor_cols
 
 X = model_df[feature_cols].copy()
 
@@ -263,3 +263,14 @@ print(model_df.info())
 
 print("\n최종 사용 변수")
 print(feature_cols)
+
+
+print(df[feature_cols].isna().sum())
+
+# ============================================================
+# 19. 전처리 완료 데이터 저장
+# ============================================================
+
+model_df.to_csv("data/processed_sensor.csv", index=False)
+
+print("전처리 데이터 저장 완료")
